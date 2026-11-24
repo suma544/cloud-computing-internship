@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  LoginDomain:
+    Type: String
+    Description: Unique Cognito hosted login domain prefix
+Resources:
+  Users:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameAttributes: [email]
+  Domain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref LoginDomain
+      UserPoolId: !Ref Users
+  Client:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref Users
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: ['http://localhost:8765/callback']
+  Files:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Auth:
+        DefaultAuthorizer: Users
+        Authorizers:
+          Users:
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              audience: [!Ref Client]
+              issuer: !Sub 'https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${Users}'
+  Storage:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: app.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          BUCKET: !Ref Files
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ['s3:ListBucket', 's3:ListBucketVersions']
+              Resource: !GetAtt Files.Arn
+            - Effect: Allow
+              Action: ['s3:PutObject', 's3:GetObject', 's3:GetObjectVersion']
+              Resource: !Sub '${Files.Arn}/*'
+      Events:
+        Files:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /files
+            Method: GET
+Outputs:
+  Endpoint:
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}/files'
+  Login:
+    Value: !Sub 'https://${LoginDomain}.auth.${AWS::Region}.amazoncognito.com'
+  ClientId:
+    Value: !Ref Client
+  UserPoolId:
+    Value: !Ref Users
