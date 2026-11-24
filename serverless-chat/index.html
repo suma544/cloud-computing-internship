@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Serverless chat</title>
+<style>
+  body { font: 1rem system-ui; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #182236; }
+  form { display: grid; gap: .6rem; }
+  label { display: grid; gap: .25rem; }
+  input, button { font: inherit; padding: .55rem; }
+  button { width: fit-content; }
+  #messages { min-height: 8rem; max-height: 24rem; overflow: auto; overflow-wrap: anywhere; }
+</style>
+<h1>Serverless chat</h1>
+<form id="join">
+  <label>WebSocket endpoint <input id="endpoint" type="url" required placeholder="wss://…/demo"></label>
+  <label>Display name <input id="name" required maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9 _\-]{0,31}"></label>
+  <label>Room key <input id="key" type="password" required autocomplete="off"></label>
+  <button id="connect">Connect</button>
+</form>
+<p role="status" id="status">Disconnected</p>
+<ol id="messages" aria-live="polite"></ol>
+<form id="compose">
+  <label>Message <input id="message" required maxlength="1000"></label>
+  <button id="send" disabled>Send</button>
+</form>
+<script>
+  const field = id => document.getElementById(id);
+  let socket;
+  field('join').addEventListener('submit', event => {
+    event.preventDefault();
+    const endpoint = new URL(field('endpoint').value);
+    if (endpoint.protocol !== 'wss:' ||
+        !/^[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/.test(endpoint.hostname)) {
+      field('status').textContent = 'Enter the secure AWS WebSocket endpoint from the stack outputs.';
+      return;
+    }
+    endpoint.searchParams.set('name', field('name').value);
+    endpoint.searchParams.set('key', field('key').value);
+    socket = new WebSocket(endpoint);
+    field('connect').disabled = true;
+    field('status').textContent = 'Connecting…';
+    socket.onopen = () => {
+      field('status').textContent = 'Connected';
+      field('send').disabled = false;
+      field('key').value = '';
+      field('message').focus();
+    };
+    socket.onclose = () => {
+      field('status').textContent = 'Disconnected';
+      field('send').disabled = true;
+      field('connect').disabled = false;
+    };
+    socket.onmessage = event => {
+      const data = JSON.parse(event.data);
+      if (typeof data.name !== 'string' || typeof data.message !== 'string') return;
+      const item = document.createElement('li');
+      item.textContent = data.name + ': ' + data.message;
+      field('messages').append(item);
+      item.scrollIntoView({block: 'nearest'});
+    };
+  });
+  field('compose').addEventListener('submit', event => {
+    event.preventDefault();
+    const message = field('message').value.trim();
+    if (socket?.readyState !== WebSocket.OPEN || !message) return;
+    socket.send(JSON.stringify({action: 'send', message}));
+    field('message').value = '';
+  });
+</script>
+</html>

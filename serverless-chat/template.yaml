@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  RoomKey:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+Resources:
+  ChatData:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: kind
+          AttributeType: S
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: kind
+          KeyType: HASH
+        - AttributeName: id
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires
+        Enabled: true
+  Socket:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref AWS::StackName
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref Socket
+      StageName: demo
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 15
+        ThrottlingRateLimit: 5
+  Chat:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: app.handler
+      CodeUri: .
+      Timeout: 15
+      Environment:
+        Variables:
+          TABLE: !Ref ChatData
+          ROOM_KEY: !Ref RoomKey
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ['dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:Query']
+              Resource: !GetAtt ChatData.Arn
+            - Effect: Allow
+              Action: 'execute-api:ManageConnections'
+              Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Socket}/demo/POST/@connections/*'
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Socket
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Chat.Arn}/invocations'
+  Connect:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Socket
+      RouteKey: '$connect'
+      Target: !Sub 'integrations/${Integration}'
+  Disconnect:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Socket
+      RouteKey: '$disconnect'
+      Target: !Sub 'integrations/${Integration}'
+  Send:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Socket
+      RouteKey: send
+      Target: !Sub 'integrations/${Integration}'
+  Invoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref Chat
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Socket}/*'
+Outputs:
+  WebSocket:
+    Value: !Sub 'wss://${Socket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/demo'
